@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "command": [
+        "{python}",
+        "-B",
+        "{config_dir}/../adapters/codex_adapter.py"
+      ],
+      "enabled": true,
+      "default_model": "gpt-6.1-sol",
+      "models": [
+        "gpt-6.1-sol",
+        "gpt-6-astra"
+      ],
+      "timeout": 120,
+      "options": {
+        "effort": "low"
+      },
+      "tool_policy": "guarded",
+      "env_names": [
+        "CODEX_BIN"
+      ]
+    },
+    "claude": {
+      "command": [
+        "{python}",
+        "-B",
+        "{config_dir}/../adapters/claude_adapter.py"
+      ],
+      "enabled": true,
+      "default_model": "claude-opus-5-5",
+      "models": [
+        "claude-opus-5-5",
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "timeout": 120,
+      "options": {
+        "effort": "low"
+      },
+      "tool_policy": "disabled",
+      "env_names": [
+        "CLAUDE_BIN"
+      ]
+    },
+    "opencode": {
+      "command": [
+        "{python}",
+        "-B",
+        "{config_dir}/../adapters/opencode_adapter.py"
+      ],
+      "enabled": true,
+      "default_model": "muse-spark-1.3-contributor-free",
+      "models": [
+        "muse-spark-1.3-contributor-free",
+        "mimo-v2.6-flash-free",
+        "longcat-2.5-preview-free"
+      ],
+      "timeout": 180,
+      "options": {
+        "fallback_models": "mimo-v2.6-flash-free,longcat-2.5-preview-free"
+      },
+      "tool_policy": "guarded",
+      "env_names": [
+        "OPENCODE_BIN"
+      ]
+    }
+  },
+  "profiles": {
+    "default": [
+      "codex",
+      "claude",
+      "opencode"
+    ],
+    "codex-only": [
+      "codex"
+    ],
+    "claude-only": [
+      "claude"
+    ],
+    "opencode-only": [
+      "opencode"
+    ]
+  },
+  "default_profile": "default"
+}
