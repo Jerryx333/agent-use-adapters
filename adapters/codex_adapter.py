@@ -96,7 +96,9 @@ def main():
         if not isinstance(request, dict) or request.get("protocol_version") != 1:
             raise ValueError("invalid protocol")
         result = generate(request)
-    except (Exception, KeyboardInterrupt):
+    except KeyboardInterrupt:
+        result = {"protocol_version": 1, "state": "failed", "accepted": False, "reason": "interrupted", "fatal": False}
+    except Exception:
         result = {"protocol_version": 1, "state": "failed", "accepted": False, "reason": "invalid_request", "fatal": True}
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result["state"] == "staged_for_review" else 1

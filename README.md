@@ -71,9 +71,10 @@ or `OPENCODE_BIN` if needed.
 | `free_tier_rejected` | OpenCode's upstream rejected access to its free tier. |
 | `payment_required` | OpenCode's upstream requires payment or additional funds. |
 | `tool_use_rejected` | OpenCode attempted tools and produced no usable final text. |
-| `interrupted` | OpenCode execution or cleanup was interrupted. |
+| `interrupted` | Execution was cancelled or received a termination signal; the core stops the entire fallback chain. |
 
-The last four reasons are OpenCode-specific. A fatal failure stops that provider's
+All three adapters return `interrupted`. Only `free_tier_rejected`, `payment_required`,
+and `tool_use_rejected` are OpenCode-specific. A fatal failure stops that provider's
 attempt; it does not approve a draft or authorize spending.
 
 ## Trust model

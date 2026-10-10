@@ -9,25 +9,26 @@ if [[ -n "${XDG_CONFIG_HOME:-}" && "$XDG_CONFIG_HOME" == /* ]]; then
 fi
 target="$config_base/agent-use/dispatcher.json"
 mkdir -p "$(dirname "$target")"
-if [[ -L "$target" ]] && python3 -B - "$target" "$registry" <<'PY'
+python3 -B - "$target" "$registry" <<'PY'
+import os
 from pathlib import Path
 import sys
+target, registry = sys.argv[1:]
 try:
-    matches = Path(sys.argv[1]).resolve(strict=True) == Path(sys.argv[2]).resolve(strict=True)
-except (OSError, RuntimeError):
-    matches = False
-sys.exit(0 if matches else 1)
+    os.symlink(registry, target)
+except FileExistsError:
+    try:
+        matches = Path(target).is_symlink() and Path(target).resolve(strict=True) == Path(registry).resolve(strict=True)
+    except (OSError, RuntimeError):
+        matches = False
+    if not matches:
+        print(f"Refusing to replace the existing registry: {target}", file=sys.stderr)
+        print(f'Use AGENT_USE_CONFIG="{registry}" temporarily, or merge the registries yourself.', file=sys.stderr)
+        sys.exit(1)
+    print(f"Already installed: {target}")
+else:
+    print(f"Installed: {target}")
 PY
-then
-    echo "Already installed: $target"
-elif [[ -e "$target" || -L "$target" ]]; then
-    echo "Refusing to replace the existing registry: $target" >&2
-    echo "Use AGENT_USE_CONFIG=\"$registry\" temporarily, or merge the registries yourself." >&2
-    exit 1
-else
-    ln -s "$registry" "$target"
-    echo "Installed: $target"
-fi
 cat <<'NEXT'
 Next, from the agent-use core directory:
   python3 -B scripts/agent_use.py list

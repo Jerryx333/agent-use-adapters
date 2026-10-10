@@ -65,9 +65,9 @@ OpenCode 默认备选为 `mimo-v2.6-flash-free,longcat-2.5-preview-free`。
 | `free_tier_rejected` | OpenCode 上游拒绝免费档访问。 |
 | `payment_required` | OpenCode 上游要求付费或补充余额。 |
 | `tool_use_rejected` | OpenCode 尝试调用工具，且没有可用的最终文本。 |
-| `interrupted` | OpenCode 执行或清理被中断。 |
+| `interrupted` | 执行被取消或收到终止信号；核心据此停止整条顶替链。 |
 
-最后四项仅适用于 OpenCode。fatal 失败停止当前 provider 的尝试，不代表批准待审稿或授权花费。
+三个适配器都会返回 `interrupted`。只有 `free_tier_rejected`、`payment_required` 和 `tool_use_rejected` 仅适用于 OpenCode。fatal 失败停止当前 provider 的尝试，不代表批准待审稿或授权花费。
 
 ## 信任模型
 

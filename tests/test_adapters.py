@@ -1,4 +1,5 @@
 """Offline adapter classification, safety, fallback, and protocol tests."""
+import io
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,33 @@ class ClassificationTests(unittest.TestCase):
             for text, reason, fatal in cases:
                 with self.subTest(adapter=adapter.__name__, text=text):
                     self.assertEqual(adapter.classify(1, text), (reason, fatal))
+
+
+class MainExceptionTests(unittest.TestCase):
+    def assert_main_failure(self, adapter, exception, reason, fatal):
+        request = io.TextIOWrapper(io.BytesIO(b'{"protocol_version": 1}'))
+        output = io.StringIO()
+        with mock.patch.object(adapter.sys, 'stdin', request), \
+                mock.patch.object(adapter.sys, 'stdout', output), \
+                mock.patch.object(adapter.signal, 'signal'), \
+                mock.patch.object(adapter, 'generate', side_effect=exception) as generate:
+            self.assertEqual(adapter.main(), 1)
+        generate.assert_called_once_with({'protocol_version': 1})
+        self.assertEqual(json.loads(output.getvalue()), {
+            'protocol_version': 1, 'state': 'failed', 'accepted': False,
+            'reason': reason, 'fatal': fatal})
+
+    def test_codex_interrupted(self):
+        self.assert_main_failure(codex_adapter, KeyboardInterrupt(), 'interrupted', False)
+
+    def test_claude_interrupted(self):
+        self.assert_main_failure(claude_adapter, KeyboardInterrupt(), 'interrupted', False)
+
+    def test_codex_invalid_request(self):
+        self.assert_main_failure(codex_adapter, ValueError('invalid options'), 'invalid_request', True)
+
+    def test_claude_invalid_request(self):
+        self.assert_main_failure(claude_adapter, ValueError('invalid options'), 'invalid_request', True)
 
 
 class OpenCodeTests(unittest.TestCase):
