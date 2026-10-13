@@ -84,4 +84,4 @@ OpenCode 会话删除采用尽力清理方式。
 [DISPATCHER.md](https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md)。
 运行 `bash scripts/test.sh` 执行离线检查。
 
-许可证：[MIT](LICENSE)。
+许可证为 [Apache-2.0](LICENSE)。

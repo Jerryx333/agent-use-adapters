@@ -94,4 +94,4 @@ See the core's [dispatcher protocol](https://github.com/Jerryx333/agent-use/blob
 and [CONTRIBUTING.md](CONTRIBUTING.md) for development. Run offline checks with
 `bash scripts/test.sh`.
 
-License: [MIT](LICENSE).
+Licensed under [Apache-2.0](LICENSE).
