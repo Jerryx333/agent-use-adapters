@@ -86,8 +86,8 @@ registries before running them; CLI safety settings do not remove their process'
 normal user privileges. OpenCode session deletion is best-effort.
 
 Child processes receive `AIW_NESTED=1` to identify them as delegated executors.
-This is recognized when used with [ai-harness](https://github.com/Jerryx333/ai-harness)
-and has no effect otherwise. For ai-harness workflows, install these adapters and
+This is recognized when used with [aiw](https://github.com/Jerryx333/aiw)
+and has no effect otherwise. For aiw workflows, install these adapters and
 point its dispatch setup at the agent-use core.
 
 See the core's [dispatcher protocol](https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md)

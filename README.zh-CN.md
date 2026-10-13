@@ -77,8 +77,8 @@ OpenCode 默认备选为 `mimo-v2.6-flash-free,longcat-2.5-preview-free`。
 OpenCode 会话删除采用尽力清理方式。
 
 子进程会带上 `AIW_NESTED=1`，表示它是被委派的执行方。
-搭配 [ai-harness](https://github.com/Jerryx333/ai-harness) 使用时生效，其它情况下无影响。
-在 ai-harness 工作流中，安装本仓库的适配器，并把调度配置指向 agent-use 核心即可。
+搭配 [aiw](https://github.com/Jerryx333/aiw) 使用时生效，其它情况下无影响。
+在 aiw 工作流中，安装本仓库的适配器，并把调度配置指向 agent-use 核心即可。
 
 开发说明见 [CONTRIBUTING.md](CONTRIBUTING.md)，协议见核心的
 [DISPATCHER.md](https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md)。
