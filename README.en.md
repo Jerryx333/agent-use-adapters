@@ -12,7 +12,7 @@ Connect the Codex and Claude Code CLIs you are already logged in to, plus OpenCo
 ## What changes after installation?
 
 - **One install command, three CLIs ready.** Logged-in Codex and Claude Code work right away; OpenCode's free models need no login.
-- **If one is unavailable, the next takes over.** The default order is Codex → Claude Code → OpenCode, or you can use just one.
+- **If one is unavailable, the next takes over.** The default order is Codex → Claude Code → OpenCode, or you can use just one. If you interrupt a run, the whole chain stops instead of trying the next one.
 - **Conservative defaults.** Every task runs in an empty temporary directory: Codex uses a read-only sandbox, Claude Code has all tools disabled, OpenCode allows only free models and denies tool calls; sessions are not kept (best-effort for OpenCode).
 - **Consistent failure reasons.** Missing login, exhausted quota, rate limits, timeouts and more each have a fixed reason code, so callers can decide what to do next.
 
@@ -49,7 +49,7 @@ Inspect `runs/first/response.txt` and `runs/first/status.json`; use a fresh outp
 directory for a new task or retry.
 
 Omit `providers` to try the default order: Codex → Claude → OpenCode, falling back
-when a route fails. Named profiles are `default`, `codex-only`, `claude-only`, and
+when a route fails (except after an interruption). Named profiles are `default`, `codex-only`, `claude-only`, and
 `opencode-only`; use `"profile":"opencode-only"` instead of `providers` to select one.
 
 Where the installer puts the registry and how to use your own: see the [guide](docs/guide.md#what-the-installer-does).

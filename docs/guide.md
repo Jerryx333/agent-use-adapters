@@ -4,9 +4,7 @@ Start with the [README](../README.en.md) for what problems it solves. This guide
 
 ## What the installer does
 
-The installer links `config/dispatcher.json` into
-`${XDG_CONFIG_HOME:-$HOME/.config}/agent-use/dispatcher.json`. Only a nonempty,
-absolute `XDG_CONFIG_HOME` is honored. Repeating installation is safe; an existing
+The installer links `config/dispatcher.json` into `<config dir>/agent-use/dispatcher.json`. The config dir defaults to `$HOME/.config`; only a nonempty, absolute `XDG_CONFIG_HOME` replaces it. A relative value is ignored and `$HOME/.config` is used. Repeating installation is safe; an existing
 different file or symlink is never overwritten. To use this registry temporarily,
 set `AGENT_USE_CONFIG` to the full path of this repository's `config/dispatcher.json`,
 or merge registrations yourself. Keep this clone in place while its link is installed.

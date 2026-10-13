@@ -4,9 +4,7 @@
 
 ## 安装做了什么
 
-安装脚本把 `config/dispatcher.json` 软链到
-`${XDG_CONFIG_HOME:-$HOME/.config}/agent-use/dispatcher.json`，仅接受非空的绝对路径
-`XDG_CONFIG_HOME`。重复安装安全，已有的其它文件或软链不会被覆盖。
+安装脚本把 `config/dispatcher.json` 软链到 `<配置目录>/agent-use/dispatcher.json`。配置目录默认是 `$HOME/.config`；只有 `XDG_CONFIG_HOME` 非空且为绝对路径时才改用它，相对路径会被忽略、仍用 `$HOME/.config`。重复安装安全，已有的其它文件或软链不会被覆盖。
 也可以把 `AGENT_USE_CONFIG` 临时设为本仓库 `config/dispatcher.json` 的完整路径，或自行合并注册表。
 软链安装后请保留仓库位置；核心先解析软链，再展开 `{config_dir}`，因此能正确找到适配器。
 

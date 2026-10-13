@@ -12,7 +12,7 @@
 ## 装上之后有什么不同
 
 - **一条安装命令，三家直接可用。** 已登录的 Codex、Claude Code 拿来就用；OpenCode 的免费模型不用登录。
-- **某家不可用时自动换下一家。** 默认按 Codex → Claude Code → OpenCode 的顺序尝试，也可以只用其中一家。
+- **某家不可用时自动换下一家。** 默认按 Codex → Claude Code → OpenCode 的顺序尝试，也可以只用其中一家；你主动中断时整条停下，不会接着试下一家。
 - **默认更保守。** 每单在空的临时目录里跑：Codex 用只读沙箱，Claude Code 禁用全部工具，OpenCode 只允许免费模型、拒绝工具调用；用完不保留会话（OpenCode 为尽力清理）。
 - **失败原因统一归类。** 未登录、额度耗尽、限流、超时等都有固定的原因码，调用方可以按原因决定下一步。
 
@@ -47,7 +47,7 @@ OpenCode 的免费 Zen 模型无需登录。实际调用会使用所选 CLI 的�
 成功结果仍是待审稿：`state: staged_for_review`、`accepted: false`。
 查看 `runs/first/response.txt` 和 `runs/first/status.json`；新任务或重试请使用新的输出目录。
 
-不写 `providers` 时，默认按 Codex → Claude → OpenCode 顺序尝试，失败后自动换下一家。
+不写 `providers` 时，默认按 Codex → Claude → OpenCode 顺序尝试，失败后自动换下一家（中断除外）。
 可用 profile：`default`、`codex-only`、`claude-only`、`opencode-only`；
 例如用 `"profile":"opencode-only"` 替代 `providers` 来选择 OpenCode。
 
