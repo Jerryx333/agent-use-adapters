@@ -1,18 +1,36 @@
 # agent-use-adapters
 
-[简体中文](README.zh-CN.md)
+[中文](README.md) | [English](README.en.md)
 
-Ready-to-use CLI adapters for [agent-use](https://github.com/Jerryx333/agent-use).
-The core stays vendor-neutral; this repository supplies Codex, Claude Code, and
-OpenCode integrations and a registry you can install with one command.
+把你已经登录的 Codex、Claude Code 和免登录的 OpenCode 免费模型接进 [agent-use](https://github.com/Jerryx333/agent-use)：装一次、不用手写配置，就能用同一条命令把任务交给它们，某家不可用时自动换下一家。
 
-Requires Python 3.11+, Bash, and POSIX (macOS/Linux). Install the official CLIs
-first. Existing official CLI logins work directly; no handwritten configuration
-or additional Python packages are needed.
+## 解决什么问题
 
-## 30-second setup
+- **agent-use 核心只带演示适配器。** 想接真模型，得自己写注册表、摸清每家 CLI 的参数和出错方式。
+- **直接在脚本里调这些 CLI 不够稳妥。** 一不小心就带上了工具权限、在工作目录里写文件，或留下一堆会话记录。
 
-Clone both repositories next to each other:
+## 装上之后有什么不同
+
+- **一条安装命令，三家直接可用。** 已登录的 Codex、Claude Code 拿来就用；OpenCode 的免费模型不用登录。
+- **某家不可用时自动换下一家。** 默认按 Codex → Claude Code → OpenCode 的顺序尝试，也可以只用其中一家。
+- **默认更保守。** 每单在空的临时目录里跑：Codex 用只读沙箱，Claude Code 禁用全部工具，OpenCode 只允许免费模型、拒绝工具调用；用完不保留会话（OpenCode 为尽力清理）。
+- **失败原因统一归类。** 未登录、额度耗尽、限流、超时等都有固定的原因码，调用方可以按原因决定下一步。
+
+## 你可能会担心的
+
+**会不会花钱？** 实际调用用的是所选 CLI 自己的账号额度。OpenCode 只允许 `-free` 模型；上游要求付费时直接失败，不会转去付费模型。
+
+**会碰我的账号凭据吗？** 不读取、不保存，认证全部交给各 CLI 自己。
+
+**任务会发到哪？** 发给所选 CLI 及其上游服务；任务和回答以明文存在本机。
+
+**会覆盖我已有的配置吗？** 不会。重复安装安全，已有的其它文件或软链不会被覆盖。
+
+## 30 秒上手
+
+需要 Python 3.11+、Bash 和 POSIX 系统（macOS/Linux），先装好官方 CLI；已有的官方登录直接可用，不用装额外的 Python 包。
+
+把两个仓库克隆到同一个父目录：
 
 ```sh
 git clone https://github.com/Jerryx333/agent-use.git
@@ -21,77 +39,38 @@ cd agent-use-adapters
 bash scripts/install.sh
 cd ../agent-use
 python3 -B scripts/agent_use.py list
-printf '%s' '{"version":1,"task":"Explain what a CLI is in one sentence.","providers":["codex"],"output":"runs/first"}' | python3 -B scripts/agent_use.py run
+printf '%s' '{"version":1,"task":"用一句话解释什么是 CLI。","providers":["codex"],"output":"runs/first"}' | python3 -B scripts/agent_use.py run
 ```
 
-Authenticate first if needed: `codex login`, or start `claude` and use `/login`.
-OpenCode free Zen models need no login. A model run uses the selected CLI's quota.
-Successful output is a draft: `state: staged_for_review`, `accepted: false`.
-Inspect `runs/first/response.txt` and `runs/first/status.json`; use a fresh output
-directory for a new task or retry.
+尚未登录时，运行 `codex login`，或进入 `claude` 后使用 `/login`。
+OpenCode 的免费 Zen 模型无需登录。实际调用会使用所选 CLI 的额度。
+成功结果仍是待审稿：`state: staged_for_review`、`accepted: false`。
+查看 `runs/first/response.txt` 和 `runs/first/status.json`；新任务或重试请使用新的输出目录。
 
-The installer links `config/dispatcher.json` into
-`${XDG_CONFIG_HOME:-$HOME/.config}/agent-use/dispatcher.json`. Only a nonempty,
-absolute `XDG_CONFIG_HOME` is honored. Repeating installation is safe; an existing
-different file or symlink is never overwritten. To use this registry temporarily,
-set `AGENT_USE_CONFIG` to the full path of this repository's `config/dispatcher.json`,
-or merge registrations yourself. Keep this clone in place while its link is installed.
-The core resolves the link before expanding `{config_dir}`, so adapter paths work.
+不写 `providers` 时，默认按 Codex → Claude → OpenCode 顺序尝试，失败后自动换下一家。
+可用 profile：`default`、`codex-only`、`claude-only`、`opencode-only`；
+例如用 `"profile":"opencode-only"` 替代 `providers` 来选择 OpenCode。
 
-Omit `providers` to try the default order: Codex → Claude → OpenCode, falling back
-when a route fails. Named profiles are `default`, `codex-only`, `claude-only`, and
-`opencode-only`; use `"profile":"opencode-only"` instead of `providers` to select one.
+安装把注册表放到哪、怎么改用自己的注册表，见[使用指南](docs/guide.zh-CN.md#安装做了什么)。
 
-## Adapters
+## 适配器
 
-| Adapter | Requirements / official login | Safety measures | Supported options |
+| 名称 | 需要什么 / 官方登录 | 安全措施 | 支持的 options |
 | --- | --- | --- | --- |
-| `codex` | Codex CLI; `codex login` | Empty temporary directory, read-only sandbox, ephemeral session | `effort`: `minimal`, `low` (default), `medium`, `high`, `xhigh` |
-| `claude` | Claude Code; `/login` inside `claude` | Empty temporary directory, all tools disabled, one turn, no session persistence | `effort`: `low` (default), `medium`, `high`, `max` |
-| `opencode` | OpenCode CLI with `run --pure`; no login for free Zen models | Only `-free` models; tool calls require authorization and are denied; deletes observed sessions after execution; tries `fallback_models` in order within a shared time budget | `fallback_models`: comma-separated `-free` model names |
+| `codex` | Codex CLI；`codex login` | 空临时目录、只读沙箱、不持久化会话 | `effort`：`minimal`、`low`（默认）、`medium`、`high`、`xhigh` |
+| `claude` | Claude Code；在 `claude` 中 `/login` | 空临时目录、禁用全部工具、单轮、不持久化会话 | `effort`：`low`（默认）、`medium`、`high`、`max` |
+| `opencode` | 支持 `run --pure` 的 OpenCode CLI；免费 Zen 模型无需登录 | 只允许 `-free` 模型；工具调用需要授权，因此被拒绝；结束后删除观察到的会话；在共享时间预算内按 `fallback_models` 依次备选 | `fallback_models`：逗号分隔的 `-free` 模型名 |
 
-Defaults: `gpt-6.1-sol`, `claude-opus-5-5`, and
-`muse-spark-1.3-contributor-free`. OpenCode's default backups are
-`mimo-v2.6-flash-free,longcat-2.5-preview-free`. Model availability depends on the CLI
-and upstream service. Override executable locations with `CODEX_BIN`, `CLAUDE_BIN`,
-or `OPENCODE_BIN` if needed.
+默认模型依次为 `gpt-6.1-sol`、`claude-opus-5-5`、`muse-spark-1.3-contributor-free`。
+OpenCode 默认备选为 `mimo-v2.6-flash-free,longcat-2.5-preview-free`。
+模型是否可用取决于 CLI 和上游服务。需要指定可执行文件位置时，设置 `CODEX_BIN`、
+`CLAUDE_BIN` 或 `OPENCODE_BIN`。
 
-## Failure reasons
+## 更多文档
 
-| Reason | Meaning |
-| --- | --- |
-| `credential_missing` | The CLI is missing or its official authentication is required. |
-| `quota_exhausted` | The account or service usage allowance is exhausted. |
-| `rate_limited` | Requests exceed the service's rate limit. |
-| `network_failed` | A connection, timeout, DNS, or classified server error occurred. |
-| `upstream_failed` | The CLI or service failed without a more specific classification. |
-| `empty_response` | The CLI completed without usable text. |
-| `timeout` | The adapter's execution budget expired. |
-| `invalid_request` | The protocol, options, model, or another required request value is invalid. |
-| `free_tier_rejected` | OpenCode's upstream rejected access to its free tier. |
-| `payment_required` | OpenCode's upstream requires payment or additional funds. |
-| `tool_use_rejected` | OpenCode attempted tools and produced no usable final text. |
-| `interrupted` | Execution was cancelled or received a termination signal; the core stops the entire fallback chain. |
+- [使用指南](docs/guide.zh-CN.md)：安装细节、失败原因、信任模型。
+- agent-use 核心的[调度协议](https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md)（英文）。
 
-All three adapters return `interrupted`. Only `free_tier_rejected`, `payment_required`,
-and `tool_use_rejected` are OpenCode-specific. A fatal failure stops that provider's
-attempt; it does not approve a draft or authorize spending.
+## 参与贡献
 
-## Trust model
-
-These adapters do not read or save account credentials; authentication is entirely
-handled by each official CLI. Tasks are sent to those CLIs and their upstream
-services, and task/response artifacts are local plaintext. Review adapters and
-registries before running them; CLI safety settings do not remove their process's
-normal user privileges. OpenCode session deletion is best-effort.
-
-Child processes receive `AIW_NESTED=1` to identify them as delegated executors.
-This is recognized when used with [aiw](https://github.com/Jerryx333/aiw)
-and has no effect otherwise. For aiw workflows, install these adapters and
-point its dispatch setup at the agent-use core.
-
-See the core's [dispatcher protocol](https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md)
-and [CONTRIBUTING.md](CONTRIBUTING.md) for development. Run offline checks with
-`bash scripts/test.sh`.
-
-Licensed under [Apache-2.0](LICENSE).
+运行 `bash scripts/test.sh` 执行离线检查；改动走 PR，开发说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。许可证：[Apache-2.0](LICENSE)。
