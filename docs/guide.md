@@ -1,6 +1,6 @@
 # agent-use-adapters usage guide
 
-Start with the [README](../README.en.md) for what problems it solves. This guide covers installation details, failure reasons and the trust model.
+Start with the [README](../README.md) for what problems it solves. This guide covers installation details, failure reasons and the trust model.
 
 ## What the installer does
 

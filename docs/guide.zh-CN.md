@@ -1,6 +1,6 @@
 # agent-use-adapters 使用指南
 
-先看 [README](../README.md) 了解它解决什么问题；本文讲安装细节、失败原因和信任模型。
+先看 [README](../README.zh-CN.md) 了解它解决什么问题；本文讲安装细节、失败原因和信任模型。
 
 ## 安装做了什么
 
