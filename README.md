@@ -75,4 +75,4 @@ or `OPENCODE_BIN` if needed.
 
 ## Contributing
 
-Run offline checks with `bash scripts/test.sh`. Submit changes through PRs; see [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md) for development. License: [Apache-2.0](LICENSE).
+Run offline checks with `bash scripts/test.sh`. Submit changes through PRs; see [CONTRIBUTING.md](CONTRIBUTING.md) for development. License: [Apache-2.0](LICENSE).

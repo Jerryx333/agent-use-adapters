@@ -73,4 +73,4 @@ OpenCode 默认备选为 `mimo-v2.6-flash-free,longcat-2.5-preview-free`。
 
 ## 参与贡献
 
-运行 `bash scripts/test.sh` 执行离线检查；改动走 PR，开发说明见 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)。许可证：[Apache-2.0](LICENSE)。
+运行 `bash scripts/test.sh` 执行离线检查；改动走 PR，开发说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。许可证：[Apache-2.0](LICENSE)。
