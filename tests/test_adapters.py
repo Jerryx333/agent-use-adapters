@@ -179,6 +179,7 @@ class OpenCodeTests(unittest.TestCase):
         self.assertEqual(json.loads(kwargs['env']['OPENCODE_CONFIG_CONTENT']),
                          {'permission': {'*': 'ask'}, 'autoupdate': False, 'share': 'disabled'})
         self.assertEqual(kwargs['env']['AIW_NESTED'], '1')
+        self.assertTrue(kwargs['env']['XDG_DATA_HOME'].endswith('/.local/share/opencode-agent-use'))
         self.assertEqual(proc.communicate.call_args.kwargs['input'],
                          self.adapter.PREAMBLE + 'private-task')
         self.assertTrue(self.adapter.PREAMBLE.startswith('[Execution constraints] This is text-only generation:'))

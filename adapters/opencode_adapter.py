@@ -172,6 +172,9 @@ def generate(request):
     env = dict(os.environ)
     env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"share": "disabled", "autoupdate": False, "permission": {"*": "ask"}})
     env["AIW_NESTED"] = "1"
+    # A private data dir keeps the CLI off a database a newer OpenCode app has migrated:
+    # an older CLI fails there with "no such column" whenever its cwd is inside a git repo.
+    env["XDG_DATA_HOME"] = str(Path(env.get("HOME") or Path.home()) / ".local/share/opencode-agent-use")
     started = time.monotonic()
     attempts, calls = [], 0
     reason, fatal = "timeout", False
