@@ -62,6 +62,36 @@ class MainExceptionTests(unittest.TestCase):
     def test_codex_interrupted(self):
         self.assert_main_failure(codex_adapter, KeyboardInterrupt(), 'interrupted', False)
 
+    def test_claude_json_result_text_usage_and_errors(self):
+        ok = {'type': 'result', 'subtype': 'success', 'is_error': False, 'result': '答复',
+              'usage': {'input_tokens': 3, 'cache_creation_input_tokens': 40, 'cache_read_input_tokens': 900, 'output_tokens': 7}}
+        self.assertEqual(claude_adapter.claude_result(json.dumps(ok)),
+                         ('答复', '', {'input_tokens': 43, 'output_tokens': 7, 'cache_read_tokens': 900, 'cache_write_tokens': 40}))
+        self.assertEqual(claude_adapter.claude_result(json.dumps(dict(ok, usage={'input_tokens': 3}))), ('答复', '', None))
+        self.assertEqual(claude_adapter.claude_result(json.dumps(dict(ok, usage={'input_tokens': 3, 'output_tokens': 7}))), ('答复', '', None))
+        self.assertEqual(claude_adapter.claude_result(json.dumps(dict(ok, is_error=True, subtype='success', result='Not logged in · Please run /login')))[:2],
+                         ('', 'Not logged in · Please run /login'))
+        self.assertEqual(claude_adapter.claude_result('plain text'), ('', 'plain text', None))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'task.txt').write_text('任务')
+            request = {'task_file': str(root / 'task.txt'), 'output': str(root / 'out'), 'model': 'sonnet', 'options': {}, 'timeout': 30}
+            fake = root / 'claude'; fake.write_text('#!/bin/sh\n'); fake.chmod(0o755)
+            for stdout, rc, state, usage, reason in (
+                    (json.dumps(ok), 0, 'staged_for_review', {'input_tokens': 43, 'output_tokens': 7, 'cache_read_tokens': 900, 'cache_write_tokens': 40}, None),
+                    (json.dumps(dict(ok, is_error=True, result='Not logged in · Please run /login')), 1, 'failed', None, 'credential_missing'),
+                    (json.dumps(dict(ok, is_error=True, result='Not logged in · Please run /login')), 0, 'failed', None, 'credential_missing'),
+                    (json.dumps(dict(ok, result='')), 0, 'failed', None, 'empty_response')):
+                done = subprocess.CompletedProcess([], rc, stdout, '')
+                with mock.patch.dict(os.environ, {'CLAUDE_BIN': str(fake)}), \
+                        mock.patch.object(claude_adapter.subprocess, 'run', return_value=done) as run:
+                    result = claude_adapter.generate(request)
+                self.assertEqual(run.call_args.args[0][2:4], ['--output-format', 'json'])
+                self.assertEqual((result['state'], result.get('reason')), (state, reason))
+                if usage:
+                    self.assertEqual(result['metadata']['usage'], usage)
+                    self.assertEqual(result['response'], '答复')
+
     def test_claude_interrupted(self):
         self.assert_main_failure(claude_adapter, KeyboardInterrupt(), 'interrupted', False)
 
@@ -150,6 +180,29 @@ class OpenCodeTests(unittest.TestCase):
         self.assertEqual(self.status(), result)
         self.assertEqual([call.args[1] for call in attempt.call_args_list],
                          ['primary-free', 'next-free'])
+
+    def test_usage_sums_steps_and_fallbacks_in_agent_use_terms(self):
+        # 实测：total = input + output + reasoning + cache.read + cache.write，input 不含缓存、output 不含思考
+        step = lambda i, o, r, read, write: {'type': 'step_finish', 'part': {'tokens': {
+            'total': i + o + r + read + write, 'input': i, 'output': o, 'reasoning': r, 'cache': {'read': read, 'write': write}}}}
+        self.request['options'] = {'fallback_models': 'next-free'}
+        self.popen.side_effect = [
+            self.proc([{'type': 'tool_use'}, step(100, 5, 2, 900, 10)]),
+            self.proc([step(20, 3, 1, 50, 0), step(30, 4, 0, 60, 0), {'type': 'text', 'part': {'text': 'OK'}}])]
+        result = self.adapter.generate(self.request)
+        expected = {'input_tokens': 160, 'output_tokens': 15, 'thinking_tokens': 3, 'cache_read_tokens': 1010, 'cache_write_tokens': 10}
+        self.assertEqual(result['metadata']['usage'], expected)
+        self.assertEqual(self.status()['usage'], expected)
+        # 任一次尝试没报用量（这里第一次没有 step_finish）、或某步缺分项：整体省略，不估算
+        # 缺缓存或思考字段、开始了没结束的一步：都按未知
+        self.assertIsNone(self.adapter.step_usage(json.dumps({'type': 'step_finish', 'part': {'tokens': {'input': 3, 'output': 7}}})))
+        self.assertIsNone(self.adapter.step_usage('\n'.join(json.dumps(e) for e in (
+            {'type': 'step_start'}, step(3, 7, 0, 0, 0), {'type': 'step_start'}))))
+        for first in ([{'type': 'tool_use'}], [{'type': 'tool_use'}, {'type': 'step_finish', 'part': {'tokens': {'total': 9}}}]):
+            self.popen.side_effect = [self.proc(first), self.proc([step(1, 1, 0, 0, 0), {'type': 'text', 'part': {'text': 'OK'}}])]
+            result = self.adapter.generate(self.request)
+            self.assertEqual(result['state'], 'staged_for_review')
+            self.assertNotIn('usage', result['metadata'])
 
     def test_payment_failure_allows_successful_fallback(self):
         self.request['options'] = {'fallback_models': 'next-free'}
@@ -432,6 +485,8 @@ if '-o' in sys.argv:
     Path(sys.argv[sys.argv.index('-o') + 1]).write_text('Offline answer')
 elif '--format' in sys.argv:
     print(json.dumps({'type': 'text', 'sessionID': 'ses_offline', 'part': {'text': 'Offline answer'}}))
+elif '--output-format' in sys.argv:
+    print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Offline answer'}))
 else:
     print('Offline answer', end='')
 ''', encoding='utf-8')

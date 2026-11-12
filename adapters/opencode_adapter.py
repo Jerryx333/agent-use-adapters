@@ -65,6 +65,37 @@ def parse_events(stdout):
     return "".join(texts), calls, sessions, error
 
 
+def step_usage(stdout):
+    """所有 step_finish 的 part.tokens 相加，换成 agent-use 口径。OpenCode 的 input 不含缓存读写、
+    output 不含 reasoning；没有一步报数、或任一步缺 input/output 返回 None（未知，不估算）。"""
+    count = lambda value: value if type(value) is int and value >= 0 else None
+    totals, steps, open_step = dict(input=0, output=0, reasoning=0, read=0, write=0), 0, False
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(event, dict) and event.get("type") == "step_start":
+            open_step = True
+        if not isinstance(event, dict) or event.get("type") != "step_finish":
+            continue
+        tokens = (event.get("part") or {}).get("tokens") if isinstance(event.get("part"), dict) else None
+        cache = tokens.get("cache") if isinstance(tokens, dict) and isinstance(tokens.get("cache"), dict) else {}
+        # 换算要用到的五项缺一项就未知：缓存写并进 input、reasoning 并进 output
+        values = [count(tokens.get(k)) if isinstance(tokens, dict) else None for k in ("input", "output", "reasoning")]
+        values += [count(cache.get(k)) for k in ("read", "write")]
+        if None in values:
+            return None
+        steps, open_step = steps + 1, False
+        for key, value in zip(("input", "output", "reasoning", "read", "write"), values):
+            totals[key] += value
+    # 开始了却没结束的一步（超时、中断）用量不明，整次未知
+    if not steps or open_step:
+        return None
+    return {"input_tokens": totals["input"] + totals["write"], "output_tokens": totals["output"] + totals["reasoning"],
+            "thinking_tokens": totals["reasoning"], "cache_read_tokens": totals["read"], "cache_write_tokens": totals["write"]}
+
+
 def stop_process(proc):
     # The new session PID is its group ID; stop the entire group to avoid orphaned children.
     try:
@@ -104,7 +135,7 @@ def cleanup_sessions(binary, stdout, env, workdir):
     return was_interrupted
 
 
-def attempt(binary, model, task, output, env, timeout):
+def attempt(binary, model, task, output, env, timeout, usages=None):
     workdir = Path(tempfile.mkdtemp(prefix="opencode-adapter-", dir=str(output)))
     proc = None
     stdout, stderr = "", ""
@@ -125,6 +156,8 @@ def attempt(binary, model, task, output, env, timeout):
             stdout, stderr = stop_process(proc)
             raise
         text, calls, sessions, error = parse_events(stdout)
+        if usages is not None:
+            usages.append(step_usage(stdout))
         if reason is None:
             if error is not None or proc.returncode != 0:
                 reason, fatal = classify((error or "") + "\n" + (stderr or ""))
@@ -176,14 +209,14 @@ def generate(request):
     # an older CLI fails there with "no such column" whenever its cwd is inside a git repo.
     env["XDG_DATA_HOME"] = str(Path(env.get("HOME") or Path.home()) / ".local/share/opencode-agent-use")
     started = time.monotonic()
-    attempts, calls = [], 0
+    attempts, calls, usages = [], 0, []
     reason, fatal = "timeout", False
     for candidate in models:
         remaining = timeout - (time.monotonic() - started)
         if remaining < 5:
             break
         attempt_started = time.monotonic()
-        text, count, reason, fatal = attempt(binary, candidate, task, output, env, remaining)
+        text, count, reason, fatal = attempt(binary, candidate, task, output, env, remaining, usages)
         calls += count
         attempts.append({"model": candidate, "reason": reason or "ok", "elapsed_s": round(time.monotonic() - attempt_started, 2)})
         if reason is None:
@@ -196,6 +229,9 @@ def generate(request):
                  "elapsed_s": item["elapsed_s"]}
                 for item in attempts]
             metadata["model_switch_count"] = len(attempts) - 1
+            # 整次运行合计（含失败的备选模型）；任一次没报用量就整体省略
+            if len(usages) == len(attempts) and all(usages):
+                metadata["usage"] = {key: sum(item[key] for item in usages) for key in usages[0]}
             status = {"state": "staged_for_review", "accepted": False, "requested_model": model, **metadata, "attempts": attempts}
             (output / "response.txt").write_text(text, encoding="utf-8")
             (output / "status.json").write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")

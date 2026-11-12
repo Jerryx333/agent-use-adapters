@@ -26,7 +26,7 @@ def interrupted(_signal, _frame):
 
 def classify(returncode, stderr):
     text = (stderr or "").lower()
-    if any(k in text for k in ("not logged in", "login required", "please run /login", "invalid api key", "unauthorized", "authentication")) or re.search(r"\b401\b", text):
+    if any(k in text for k in ("not logged in", "login required", "please run /login", "invalid api key", "unauthorized", "authentication", "failed to authenticate", "oauth session expired")) or re.search(r"\b401\b", text):
         return "credential_missing", True
     if re.search(r"quota|usage.?limit|hit your .*limit|limit.{0,24}resets|"
                  r"per.?(day|week|month)|daily|weekly|monthly", text):
@@ -36,6 +36,27 @@ def classify(returncode, stderr):
     if any(k in text for k in ("network", "connection", "timed out", "timeout", "dns")) or re.search(r"\b50[023]\b", text):
         return "network_failed", False
     return "upstream_failed", False
+
+
+def claude_result(stdout):
+    """claude -p --output-format json 的结果：(正文, 错误文本, agent-use 口径的 usage 或 None)。
+    Claude 的 input_tokens 不含缓存读写，这里把缓存写入并进 input_tokens。"""
+    try:
+        data = json.loads(stdout or "")
+    except ValueError:
+        return "", stdout or "", None
+    if not isinstance(data, dict) or data.get("type") != "result":
+        return "", "", None
+    text = data.get("result") if isinstance(data.get("result"), str) else ""
+    if data.get("is_error") is not False or data.get("subtype") != "success":
+        return "", text, None
+    usage, count = data.get("usage"), lambda u, k: u.get(k) if type(u.get(k)) is int and u.get(k) >= 0 else None
+    keys = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    if not isinstance(usage, dict) or any(count(usage, k) is None for k in keys):
+        return text, "", None
+    write, read = usage["cache_creation_input_tokens"], usage["cache_read_input_tokens"]
+    return text, "", {"input_tokens": usage["input_tokens"] + write, "output_tokens": usage["output_tokens"],
+                      "cache_read_tokens": read, "cache_write_tokens": write}
 
 
 def generate(request):
@@ -61,7 +82,7 @@ def generate(request):
     # Use an empty directory, no tools, one turn, and no session persistence; send the task via stdin.
     # Remove Claude session markers to avoid being treated as a nested Claude session.
     workdir = Path(tempfile.mkdtemp(prefix="claude-adapter-", dir=str(output)))
-    argv = [binary, "-p", "--output-format", "text", "--model", model, "--effort", effort,
+    argv = [binary, "-p", "--output-format", "json", "--model", model, "--effort", effort,
             "--tools", "", "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Read,Grep,Glob,Agent",
             "--max-turns", "1", "--no-session-persistence"]
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDECODE", "CLAUDE_CODE_"))}
@@ -75,20 +96,22 @@ def generate(request):
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     elapsed = round(time.monotonic() - started, 2)
-    text = proc.stdout or ""
+    text, error, usage = claude_result(proc.stdout)
     answer.write_text(text, encoding="utf-8")
     if proc.returncode != 0 or not text.strip():
-        reason, fatal = classify(proc.returncode, proc.stderr)
-        if proc.returncode == 0 and not text.strip():
+        # 未登录等错误写在 JSON 结果里，不一定在 stderr
+        reason, fatal = classify(proc.returncode, (proc.stderr or "") + "\n" + error)
+        if proc.returncode == 0 and not text.strip() and not error.strip():
             reason, fatal = "empty_response", False
         response.update(reason=reason, fatal=fatal)
         if reason == "credential_missing":
             response["missing_credential"] = "claude-login"
         return response
     status = {"state": "staged_for_review", "accepted": False, "requested_model": model, "effort": effort,
-              "elapsed_s": elapsed, "transport": "claude_cli"}
+              "elapsed_s": elapsed, "transport": "claude_cli", **({"usage": usage} if usage else {})}
     (output / "status.json").write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
-    response.update(state="staged_for_review", response=text, metadata={"transport": "claude_cli", "elapsed_s": elapsed})
+    response.update(state="staged_for_review", response=text,
+                    metadata={"transport": "claude_cli", "elapsed_s": elapsed, **({"usage": usage} if usage else {})})
     return response
 
 
