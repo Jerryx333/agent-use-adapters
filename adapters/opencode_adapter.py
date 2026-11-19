@@ -5,6 +5,7 @@ Run: python3 -B adapters/opencode_adapter.py < request.json
 Requires the official CLI (no Zen login required).
 Protocol: https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md
 """
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -18,6 +19,7 @@ import time
 from pathlib import Path
 
 from claude_adapter import classify as classify_claude
+from trajectory import Trajectory, timestamp, write_trajectory
 
 LIMIT = 4 * 1024 * 1024
 DEFAULT_MODEL = "muse-spark-1.3-contributor-free"
@@ -39,7 +41,7 @@ def classify(text):
     return classify_claude(1, text)
 
 
-def parse_events(stdout):
+def parse_events(stdout, trajectory=None):
     texts, sessions = [], set()
     calls, error = 0, None
     for line in (stdout or "").splitlines():
@@ -57,6 +59,21 @@ def parse_events(stdout):
             texts.append(part["text"])
         elif event.get("type") == "tool_use":
             calls += 1
+            if trajectory is not None and isinstance(part, dict):
+                state = part.get("state")
+                if isinstance(state, dict) and isinstance(part.get("tool"), str):
+                    stamp = event.get("timestamp")
+                    # OpenCode event timestamps are Unix milliseconds.
+                    if type(stamp) in (int, float) and 0 <= stamp < float("inf"):
+                        try:
+                            stamp = datetime.fromtimestamp(stamp / 1000, timezone.utc).isoformat()
+                        except (ValueError, OverflowError, OSError):
+                            stamp = None
+                    stamp = timestamp(stamp)
+                    if stamp is not None:
+                        value = state.get("input", {})
+                        trajectory.append({"ts": stamp, "tool": part["tool"],
+                                           "input": (value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))[:2000], "rejected": True})
             texts.clear()
         elif event.get("type") == "error" and error is None:
             detail = event.get("error") or {}
@@ -135,7 +152,7 @@ def cleanup_sessions(binary, stdout, env, workdir):
     return was_interrupted
 
 
-def attempt(binary, model, task, output, env, timeout, usages=None):
+def attempt(binary, model, task, output, env, timeout, usages=None, trajectory=None):
     workdir = Path(tempfile.mkdtemp(prefix="opencode-adapter-", dir=str(output)))
     proc = None
     stdout, stderr = "", ""
@@ -155,7 +172,7 @@ def attempt(binary, model, task, output, env, timeout, usages=None):
         except Exception:
             stdout, stderr = stop_process(proc)
             raise
-        text, calls, sessions, error = parse_events(stdout)
+        text, calls, sessions, error = parse_events(stdout, trajectory)
         if usages is not None:
             usages.append(step_usage(stdout))
         if reason is None:
@@ -179,7 +196,9 @@ def generate(request):
         response.update(reason=reason, fatal=fatal)
         if missing:
             response["missing_credential"] = missing
-        (output / "status.json").write_text(json.dumps(response), encoding="utf-8")
+        write_trajectory(output, response.get("metadata"), response)
+        stored = {k: v for k, v in response.items() if k != "metadata"}
+        (output / "status.json").write_text(json.dumps(stored), encoding="utf-8")
         return response
 
     binary = os.environ.get("OPENCODE_BIN") or shutil.which("opencode") or str(Path.home() / ".opencode/bin/opencode")
@@ -210,18 +229,20 @@ def generate(request):
     env["XDG_DATA_HOME"] = str(Path(env.get("HOME") or Path.home()) / ".local/share/opencode-agent-use")
     started = time.monotonic()
     attempts, calls, usages = [], 0, []
+    trajectory = Trajectory()
     reason, fatal = "timeout", False
     for candidate in models:
         remaining = timeout - (time.monotonic() - started)
         if remaining < 5:
             break
         attempt_started = time.monotonic()
-        text, count, reason, fatal = attempt(binary, candidate, task, output, env, remaining, usages)
+        text, count, reason, fatal = attempt(binary, candidate, task, output, env, remaining, usages, trajectory)
         calls += count
         attempts.append({"model": candidate, "reason": reason or "ok", "elapsed_s": round(time.monotonic() - attempt_started, 2)})
         if reason is None:
             elapsed = round(time.monotonic() - started, 2)
             metadata = {"transport": "opencode_cli", "elapsed_s": elapsed, "served_model": candidate, "actual_model": candidate, "tool_calls_rejected": calls}
+            metadata.update(trajectory.metadata())
             metadata["model_attempts"] = [
                 {"requested_model": item["model"],
                  "state": "staged_for_review" if item["reason"] == "ok" else "failed",
@@ -233,6 +254,8 @@ def generate(request):
             if len(usages) == len(attempts) and all(usages):
                 metadata["usage"] = {key: sum(item[key] for item in usages) for key in usages[0]}
             status = {"state": "staged_for_review", "accepted": False, "requested_model": model, **metadata, "attempts": attempts}
+            status.pop("trajectory", None)
+            write_trajectory(output, metadata, status)
             (output / "response.txt").write_text(text, encoding="utf-8")
             (output / "status.json").write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
             response.update(state="staged_for_review", response=text, metadata=metadata)
@@ -241,6 +264,8 @@ def generate(request):
             break
     if reason != "interrupted" and any(item["reason"] == "payment_required" for item in attempts):
         reason, fatal = "payment_required", False
+    if trajectory:
+        response["metadata"] = trajectory.metadata()
     return failed(reason, fatal, "opencode-login" if reason == "credential_missing" else None)
 
 
