@@ -70,6 +70,12 @@ or `OPENCODE_BIN` if needed.
 
 ## More documentation
 
+Need an ACP engine? Explicitly select `opencode-acp` or `qwen-acp`; the default
+profile stays unchanged. The standard-library adapter supports ACP v1 streaming
+answers and `none`/`ro`/`rw` permission decisions. Model selection is strict, and
+engine-side restrictions matter: see the [ACP guide](docs/guide.md#acp-engines-opt-in)
+for executable overrides, isolation limits, and other unverified engines.
+
 - [Usage guide](docs/guide.md): installation details, failure reasons, trust model.
 - The agent-use core's [dispatcher protocol](https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md).
 

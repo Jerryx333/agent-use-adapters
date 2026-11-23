@@ -66,6 +66,46 @@
       "env_names": [
         "OPENCODE_BIN"
       ]
+    },
+    "opencode-acp": {
+      "command": [
+        "{python}",
+        "-B",
+        "{config_dir}/../adapters/acp_adapter.py"
+      ],
+      "enabled": true,
+      "default_model": "opencode/mimo-v2.6-flash-free",
+      "models": [
+        "opencode/mimo-v2.6-flash-free"
+      ],
+      "timeout": 180,
+      "options": {
+        "agent": "opencode"
+      },
+      "tool_policy": "workspace",
+      "env_names": [
+        "ACP_OPENCODE_BIN"
+      ]
+    },
+    "qwen-acp": {
+      "command": [
+        "{python}",
+        "-B",
+        "{config_dir}/../adapters/acp_adapter.py"
+      ],
+      "enabled": true,
+      "default_model": "qmodel_latest",
+      "models": [
+        "qmodel_latest"
+      ],
+      "timeout": 180,
+      "options": {
+        "agent": "qwen"
+      },
+      "tool_policy": "workspace",
+      "env_names": [
+        "ACP_QWEN_BIN"
+      ]
     }
   },
   "profiles": {

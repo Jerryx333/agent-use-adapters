@@ -68,6 +68,11 @@ OpenCode 默认备选为 `mimo-v2.6-flash-free,longcat-2.5-preview-free`。
 
 ## 更多文档
 
+要接 ACP 引擎，可显式选择 `opencode-acp` 或 `qwen-acp`，默认 profile 不变。
+适配器只用标准库，支持 ACP v1 流式回答和 `none`/`ro`/`rw` 审批，指定模型不静默降级。
+引擎自身的限制仍然重要；程序路径覆盖、隔离边界及其他未核实引擎见
+[ACP 指南](docs/guide.zh-CN.md#acp-引擎显式启用)。
+
 - [使用指南](docs/guide.zh-CN.md)：安装细节、失败原因、信任模型。
 - agent-use 核心的[调度协议](https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md)（英文）。
 
