@@ -18,9 +18,12 @@ import tempfile
 import time
 
 from opencode_adapter import classify as classify_upstream
-from trajectory import Trajectory, write_trajectory
+from trajectory import MAX_BYTES as TRAJECTORY_LIMIT, Trajectory, write_trajectory
 
 LIMIT = 4 * 1024 * 1024
+STDOUT_LINE_LIMIT = LIMIT
+STDOUT_TOTAL_LIMIT = 64 * 1024 * 1024
+STDERR_LIMIT = 64 * 1024
 COMMANDS = {
     "opencode": ["opencode", "acp"],
     "qwen": ["qwen", "--acp"],
@@ -74,10 +77,37 @@ def error_failure(error, agent):
     return Failure(reason, fatal, agent + "-login" if reason == "credential_missing" else None)
 
 
+def reported_paths(update):
+    """Return all declared paths, retaining malformed values so RO fails closed."""
+    paths = []
+    if "locations" in update:
+        locations = update["locations"]
+        if not isinstance(locations, list):
+            paths.append(None)
+        else:
+            paths.extend(item.get("path") if isinstance(item, dict) else None for item in locations)
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key = re.sub(r"[_-]", "", key).lower()
+                if (key.endswith(("path", "paths", "filename", "filenames", "directory", "directories"))
+                        or key in ("file", "files", "dir", "dirs", "cwd", "root", "folder", "folders")):
+                    paths.extend(item if isinstance(item, list) and item else [item])
+                else:
+                    walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(update.get("rawInput"))
+    return paths
+
+
 class Client:
     """One outstanding client request; duplex, deadline-bound, bounded pipe I/O."""
 
-    def __init__(self, proc, deadline, access, agent, trajectory):
+    def __init__(self, proc, deadline, access, agent, trajectory, workdir=None):
         self.proc, self.deadline = proc, deadline
         self.access, self.agent, self.trajectory = access, agent, trajectory
         self.session = None
@@ -91,11 +121,15 @@ class Client:
         self.outgoing = bytearray()
         self.buffer = bytearray()
         self.stderr = bytearray()
-        self.bytes_read = 0
+        self.stdout_bytes = 0
+        self.stdout_line_bytes = 0
+        self.exited_at = None
+        self.workdir = Path(workdir).resolve() if workdir is not None else None
         self.stdout_eof = False
         self.cancelling = False
         self.text = []
         self.calls = {}
+        self.rejected = False
         self.available_commands = None
 
     def send(self, message):
@@ -107,10 +141,14 @@ class Client:
         self.outgoing.extend(data)
 
     def pump(self, deadline):
+        self.check_exit()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            if self.exited_at is not None:
+                self.exit_failure()
             raise Failure("timeout")
-        for key, mask in self.selector.select(remaining):
+        # A descendant can hold either pipe open after the parent has exited.
+        for key, mask in self.selector.select(min(remaining, 0.05)):
             stream = key.fileobj
             if mask & selectors.EVENT_WRITE:
                 try:
@@ -134,18 +172,40 @@ class Client:
                     if stream is self.proc.stdout:
                         self.stdout_eof = True
                     continue
-                self.bytes_read += len(data)
-                if self.bytes_read > LIMIT:
-                    raise Failure("output_too_large")
                 if stream is self.proc.stdout:
+                    self.stdout_bytes += len(data)
+                    if self.stdout_bytes > STDOUT_TOTAL_LIMIT:
+                        raise Failure("output_too_large")
+                    lines = data.split(b"\n")
+                    if (self.stdout_line_bytes + len(lines[0]) > STDOUT_LINE_LIMIT
+                            or any(len(line) > STDOUT_LINE_LIMIT for line in lines[1:])):
+                        raise Failure("output_too_large")
+                    self.stdout_line_bytes = (self.stdout_line_bytes + len(data) if len(lines) == 1
+                                              else len(lines[-1]))
                     self.buffer.extend(data)
                 else:
                     self.stderr.extend(data)
+                    del self.stderr[:-STDERR_LIMIT]
+
+    def exit_failure(self):
+        tail = "\n".join(self.stderr.decode("utf-8", errors="replace").splitlines()[-20:])
+        reason, fatal = classify_error(tail)
+        raise Failure(reason, fatal, self.agent + "-login" if reason == "credential_missing" else None)
+
+    def check_exit(self):
+        if self.proc.poll() is not None:
+            if self.exited_at is None:
+                self.exited_at = time.monotonic()
+            if time.monotonic() - self.exited_at >= 0.5:
+                self.exit_failure()  # generate's finally always cleans the process group.
 
     def receive(self, deadline=None):
         deadline = self.deadline if deadline is None else deadline
         while True:
+            self.check_exit()
             if time.monotonic() >= deadline:
+                if self.exited_at is not None:
+                    self.exit_failure()
                 raise Failure("timeout")
             newline = self.buffer.find(b"\n")
             if newline >= 0:
@@ -165,15 +225,36 @@ class Client:
                     continue
                 if self.buffer:
                     raise Failure("invalid_protocol")
-                reason, fatal = classify_error(self.stderr.decode("utf-8", errors="replace"))
-                raise Failure(reason, fatal, self.agent + "-login" if reason == "credential_missing" else None)
+                self.exit_failure()
             self.pump(deadline)
+
+    def safe_path(self, value):
+        if not isinstance(value, str) or not value.strip() or self.workdir is None:
+            return False
+        try:
+            path = Path(value).expanduser()
+            return (self.workdir / path).resolve().is_relative_to(self.workdir)
+        except (OSError, RuntimeError, ValueError):
+            return False
 
     def tool(self, update, rejected=None):
         call_id = update.get("toolCallId")
         if not isinstance(call_id, str) or not call_id:
             raise Failure("invalid_protocol")
         previous = self.calls.get(call_id, {})
+        if "kind" in update:
+            previous["has_kind"] = True
+            previous["unsafe_kind"] = previous.get("unsafe_kind", False) or update["kind"] not in ("read", "search")
+        paths = reported_paths(update)
+        previous["has_path"] = previous.get("has_path", False) or bool(paths)
+        previous["unsafe_path"] = previous.get("unsafe_path", False) or any(not self.safe_path(p) for p in paths)
+        stored_paths = previous.setdefault("paths", set())
+        for path in paths:
+            if isinstance(path, str):
+                if len(stored_paths) >= 2000:
+                    previous["unsafe_path"] = True
+                    break
+                stored_paths.add(path)
         for field in ("kind", "name", "title"):
             if isinstance(update.get(field), str):
                 previous[field] = update[field][:2000]
@@ -186,12 +267,37 @@ class Client:
         tool = previous.get("name") or previous.get("kind") or "other"
         tool = re.sub(r"[\s\x00-\x1f]", "_", tool)[:128] or "other"
         row = {"ts": datetime.now(timezone.utc).isoformat(), "tool": tool,
-               "input": previous.get("input", previous.get("title", call_id))}
+               "input": previous.get("input", previous.get("title", call_id)),
+               "edit": False, "rejected": previous.get("rejected", False)}
         if previous.get("kind") in ("edit", "delete", "move"):
             row["edit"] = True
         if rejected is not None:
-            row["rejected"] = rejected
-        self.trajectory.append(row)
+            previous["rejected"] = previous.get("rejected", False) or rejected
+            self.rejected |= rejected
+        if "rejected" in previous:
+            row["rejected"] = previous["rejected"]
+        index = previous.get("row_index")
+        if index is None:
+            count = len(self.trajectory)
+            self.trajectory.append(row)
+            if len(self.trajectory) > count:
+                previous["row_index"] = count
+        else:
+            old = self.trajectory[index]
+            row["ts"] = old["ts"]
+            if old.get("edit"):
+                row["edit"] = True
+            row = Trajectory([row])[0]
+            size = self.trajectory.bytes + len(json.dumps(row).encode()) - len(json.dumps(old).encode())
+            if size <= TRAJECTORY_LIMIT:
+                self.trajectory[index] = row
+                self.trajectory.bytes = size
+            else:
+                self.trajectory.truncated = True
+                # Preserve decisions even if a larger input no longer fits.
+                old_size = len(json.dumps(old).encode())
+                old.update({k: row[k] for k in ("edit", "rejected") if k in row})
+                self.trajectory.bytes += len(json.dumps(old).encode()) - old_size
         return previous
 
     def handle(self, message):
@@ -206,11 +312,16 @@ class Client:
             call, options = params.get("toolCall"), params.get("options")
             if not isinstance(call, dict) or not isinstance(options, list):
                 raise Failure("invalid_protocol")
-            known = self.calls.get(call.get("toolCallId"), {})
-            kind = call.get("kind", known.get("kind"))
+            known = self.tool(call)
             allowed = (not self.cancelling and self.session is not None and params.get("sessionId") == self.session
-                       and (self.access == "rw" or (self.access == "ro" and kind in ("read", "search"))))
-            preferences = (["allow_once", "allow_always"] if allowed else []) + ["reject_once", "reject_always"]
+                       and (self.access == "rw" or (self.access == "ro" and known.get("has_kind")
+                            and not known.get("unsafe_kind") and known.get("has_path") and not known.get("unsafe_path"))))
+            if allowed and self.access == "ro":
+                allowed = all(self.safe_path(path) for path in known["paths"])
+            preferences = (["allow_once"] + (["allow_always"] if self.access == "rw" else []) if allowed else [])
+            preferences += ["reject_once", "reject_always"]
+            if self.cancelling:
+                preferences = []
             selected = None
             for preference in preferences:
                 selected = next((o for o in options if isinstance(o, dict) and o.get("kind") == preference
@@ -423,7 +534,7 @@ def generate(request):
             }.get(agent, {"limits": "Engine-local configuration, skills, instructions and MCP isolation are unverified."})
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     cwd=cwd, env=env, start_new_session=True)
-            client = Client(proc, started + timeout, access, agent, trajectory)
+            client = Client(proc, started + timeout, access, agent, trajectory, cwd)
             primary_error = None
             try:
                 hello = client.request("initialize", {"protocolVersion": 1, "clientCapabilities": {},
@@ -441,12 +552,13 @@ def generate(request):
                     "prompt": [{"type": "text", "text": task}]})
                 stop = result.get("stopReason")
                 if stop == "cancelled":
-                    raise Failure("interrupted")
+                    raise Failure("interrupted" if client.cancelling else
+                                  "tool_use_rejected" if client.rejected else "upstream_failed")
                 if stop != "end_turn":
                     raise Failure("upstream_failed" if isinstance(stop, str) else "invalid_protocol")
                 answer = "".join(client.text)
                 if not answer.strip():
-                    raise Failure("empty_response")
+                    raise Failure("tool_use_rejected" if client.rejected else "empty_response")
                 response.update(state="staged_for_review", response=answer)
             except (Failure, KeyboardInterrupt) as error:
                 primary_error = error

@@ -120,6 +120,33 @@ while True:
         if SCENARIO == "oversized":
             print("x" * (4 * 1024 * 1024 + 1), flush=True)
             continue
+        if SCENARIO == "stderr_flood":
+            sys.stderr.write("x" * (5 * 1024 * 1024) + "\n")
+            sys.stderr.flush()
+        if SCENARIO in ("stdout_large", "stdout_total"):
+            for _ in range(6 if SCENARIO == "stdout_large" else 65):
+                emit({"method": "custom/notification", "params": {"text": "x" * (1024 * 1024)}})
+        if SCENARIO == "stale_stderr":
+            print("HTTP 401\n" + "ordinary log\n" * 25 + "unexpected crash", file=sys.stderr, flush=True)
+            sys.exit(1)
+        if SCENARIO in ("exit_stdout", "exit_stderr"):
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                stdout=subprocess.DEVNULL if SCENARIO == "exit_stderr" else None,
+                stderr=subprocess.DEVNULL if SCENARIO == "exit_stdout" else None)
+            Path(str(TRACE) + ".pid").write_text(str(child.pid))
+            print("Error: Daily quota exhausted", file=sys.stderr, flush=True)
+            sys.exit(1)
+        if SCENARIO in ("denied_empty", "denied_cancelled"):
+            emit({"id": "denied", "method": "session/request_permission", "params": {
+                "sessionId": "session-1", "toolCall": {"toolCallId": "edit", "kind": "edit",
+                    "rawInput": {"path": "protected.txt"}},
+                "options": [{"optionId": "allow", "kind": "allow_once"}] if SCENARIO == "denied_cancelled"
+                else [{"optionId": "deny", "kind": "reject_once"}]}})
+            outcome = receive()["result"]["outcome"]
+            assert outcome == ({"outcome": "cancelled"} if SCENARIO == "denied_cancelled"
+                               else {"outcome": "selected", "optionId": "deny"})
+            reply(request, {"stopReason": "cancelled" if SCENARIO == "denied_cancelled" else "end_turn"})
+            continue
         if SCENARIO in ("timeout", "interrupt", "descendant"):
             child = subprocess.Popen([sys.executable, "-c",
                 "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"])
@@ -168,5 +195,11 @@ while True:
                 update({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": chunk}})
         reply(request, {"stopReason": "cancelled" if SCENARIO == "cancelled" else "end_turn"})
     elif method == "session/cancel":
+        if SCENARIO == "timeout":
+            emit({"id": "pending", "method": "session/request_permission", "params": {
+                "sessionId": "session-1", "toolCall": {"toolCallId": "pending", "kind": "read",
+                    "rawInput": {"path": "example.txt"}},
+                "options": [{"optionId": "deny", "kind": "reject_once"}]}})
+            assert receive()["result"]["outcome"] == {"outcome": "cancelled"}
         # Stay alive so the client must clean up the process group as well.
         continue

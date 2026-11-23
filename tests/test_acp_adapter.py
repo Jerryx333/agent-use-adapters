@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "adapters"))
@@ -92,6 +93,7 @@ class ACPTests(unittest.TestCase):
                 result = self.run_peer("permission", access)
                 self.assertEqual(result["response"], expected)
                 rows = [json.loads(line) for line in (self.root / "out/trajectory.jsonl").read_text().splitlines()]
+                self.assertEqual(len(rows), 5)
                 self.assertTrue(any(row.get("edit") for row in rows))
                 if access != "rw":
                     self.assertTrue(any(row.get("rejected") for row in rows))
@@ -164,7 +166,7 @@ class ACPTests(unittest.TestCase):
                                  ("crash", "upstream_failed"), ("auth", "credential_missing"),
                                  ("login_crash", "credential_missing"), ("malformed", "invalid_protocol"),
                                  ("oversized", "output_too_large"), ("empty", "empty_response"),
-                                 ("cancelled", "interrupted")):
+                                 ("cancelled", "upstream_failed")):
             with self.subTest(scenario=scenario):
                 result = self.run_peer(scenario)
                 self.assertEqual(result["reason"], reason)
@@ -175,8 +177,9 @@ class ACPTests(unittest.TestCase):
     def assert_child_stopped(self):
         pid = int(Path(str(self.trace) + ".pid").read_text())
         for _ in range(30):
-            state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
-            if not state.stdout.strip() or state.stdout.lstrip().startswith("Z"):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
                 return
             time.sleep(0.02)
         self.fail(f"child process {pid} survived cleanup")
@@ -186,7 +189,150 @@ class ACPTests(unittest.TestCase):
         self.assertEqual(self.run_peer("timeout", timeout=0.7)["reason"], "timeout")
         self.assertLess(time.monotonic() - started, 4)
         self.assertTrue(any(m.get("method") == "session/cancel" for m in self.messages()))
+        self.assertTrue(any(m.get("id") == "pending" and m.get("result") == {
+            "outcome": {"outcome": "cancelled"}} for m in self.messages()))
         self.assert_child_stopped()
+
+    def permission_client(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        client = acp_adapter.Client(proc, time.monotonic() + 3, "ro", "opencode",
+                                    acp_adapter.Trajectory(), self.work)
+        self.addCleanup(client.close)
+        client.session = "s1"
+        return client
+
+    def decide(self, client, call, options=None):
+        client.handle({"id": 99, "method": "session/request_permission", "params": {
+            "sessionId": "s1", "toolCall": {"toolCallId": "r", **call},
+            "options": options if options is not None else [
+                {"kind": "allow_once", "optionId": "allow"}, {"kind": "reject_once", "optionId": "reject"}]}})
+        reply = json.loads(client.outgoing.decode().splitlines()[-1])
+        return reply["result"]["outcome"]
+
+    def test_ro_checks_all_paths_and_fails_closed(self):
+        (self.work / "outside-link").symlink_to(self.root)
+        unsafe = [
+            {"locations": [{"path": "/Users/jerry/.ssh/id_rsa"}]},
+            {"locations": [{"path": "ok"}, {"path": "../task.txt"}]},
+            {"rawInput": {"path": "outside-link/task.txt"}},
+            {"rawInput": {"file_path": str(self.task)}},
+            {"rawInput": {"nested": [{"filePath": str(self.task)}]}},
+            {"rawInput": {"paths": ["ok", "../task.txt"]}},
+            {"rawInput": {"directory": ".."}},
+            {"rawInput": {"cwd": str(self.root)}},
+            {"rawInput": {"path": None}}, {"rawInput": {"path": ""}},
+            {"rawInput": {"path": "bad\x00path"}}, {"locations": [{}]},
+            {"rawInput": {"query": "hello"}}, {},
+            {"locations": [{"path": "ok"}], "rawInput": {"path": str(self.task)}},
+        ]
+        client = self.permission_client()
+        for index, fields in enumerate(unsafe):
+            for kind in ("read", "search"):
+                with self.subTest(fields=fields, kind=kind):
+                    self.assertEqual(self.decide(client, {"toolCallId": f"{index}-{kind}", "kind": kind, **fields}),
+                                     {"outcome": "selected", "optionId": "reject"})
+        for index, fields in enumerate(({"locations": [{"path": "ok"}]},
+                                       {"rawInput": {"file_path": str(self.work / "ok")}},
+                                       {"rawInput": {"path": ".", "pattern": "*.py"}})):
+            self.assertEqual(self.decide(client, {"toolCallId": f"safe-{index}", "kind": "read", **fields}),
+                             {"outcome": "selected", "optionId": "allow"})
+
+    def test_permission_cannot_downgrade_kind_or_paths(self):
+        client = self.permission_client()
+        for index, (first, later) in enumerate((
+            ({"kind": "edit", "rawInput": {"path": "ok"}}, {"kind": "read"}),
+            ({"kind": "read", "rawInput": {"path": "ok"}}, {"kind": "execute"}),
+            ({"kind": "other", "rawInput": {"path": "ok"}}, {"kind": "search"}),
+            ({"kind": "read", "rawInput": {"path": str(self.task)}}, {"rawInput": {"path": "ok"}}),
+            ({"kind": "read", "locations": [{"path": str(self.task)}]}, {"locations": [{"path": "ok"}]}),
+        )):
+            with self.subTest(first=first, later=later):
+                client.tool({"toolCallId": str(index), **first})
+                self.assertEqual(self.decide(client, {"toolCallId": str(index), **later}),
+                                 {"outcome": "selected", "optionId": "reject"})
+                client.tool({"toolCallId": str(index), "kind": "read", "status": "completed"})
+                self.assertTrue(client.trajectory[index]["rejected"])
+        self.assertEqual(len(client.trajectory), 5)
+
+    def test_ro_never_selects_allow_always_and_cancellation_wins(self):
+        client = self.permission_client()
+        call = {"kind": "read", "rawInput": {"path": "ok"}}
+        always = [{"kind": "allow_always", "optionId": "always"}]
+        self.assertEqual(self.decide(client, call, always), {"outcome": "cancelled"})
+        self.assertEqual(self.decide(client, call, always + [{"kind": "reject_once", "optionId": "reject"}]),
+                         {"outcome": "selected", "optionId": "reject"})
+        client.cancelling = True
+        self.assertEqual(self.decide(client, call), {"outcome": "cancelled"})
+
+    def test_ro_resolves_previous_paths_again_at_permission_time(self):
+        client = self.permission_client()
+        link = self.work / "link"
+        link.symlink_to(self.work)
+        client.tool({"toolCallId": "r", "kind": "read", "rawInput": {"path": "link/task.txt"}})
+        link.unlink()
+        link.symlink_to(self.root)
+        self.assertEqual(self.decide(client, {}), {"outcome": "selected", "optionId": "reject"})
+
+    def test_rejected_tool_without_body_and_peer_cancellation(self):
+        for scenario in ("denied_empty", "denied_cancelled"):
+            with self.subTest(scenario=scenario):
+                self.trace.unlink(missing_ok=True)
+                self.assertEqual(self.run_peer(scenario, "ro")["reason"], "tool_use_rejected")
+                self.assertFalse(any(m.get("method") == "session/cancel" for m in self.messages()))
+
+    def test_exit_with_inherited_pipes_is_classified_promptly(self):
+        for scenario in ("exit_stdout", "exit_stderr"):
+            with self.subTest(scenario=scenario):
+                started = time.monotonic()
+                self.assertEqual(self.run_peer(scenario)["reason"], "quota_exhausted")
+                self.assertLess(time.monotonic() - started, 2)
+                self.assert_child_stopped()
+
+    def test_stderr_tail_and_separate_stdout_limits(self):
+        self.assertEqual(self.run_peer("stderr_flood")["response"], "PONG")
+        self.assertEqual(self.run_peer("stdout_large")["response"], "PONG")
+        self.assertEqual(self.run_peer("stdout_total")["reason"], "output_too_large")
+        self.assertEqual(self.run_peer("stale_stderr")["reason"], "upstream_failed")
+
+    def test_stderr_memory_is_bounded(self):
+        client = self.permission_client()
+        with mock.patch.object(client.selector, "select", return_value=[
+                (mock.Mock(fileobj=client.proc.stderr), acp_adapter.selectors.EVENT_READ)]), \
+                mock.patch.object(acp_adapter.os, "read", return_value=b"x" * 65536):
+            for _ in range(80):
+                client.pump(client.deadline)
+        self.assertEqual(len(client.stderr), 65536)
+
+    def test_error_classification_regressions(self):
+        import claude_adapter
+        import opencode_adapter
+        for diagnostic, expected in (
+            ("getaddrinfo ENOTFOUND", ("network_failed", False)),
+            ("read ECONNRESET", ("network_failed", False)),
+            ("ECONNREFUSED", ("network_failed", False)),
+            ("fetch failed", ("network_failed", False)),
+            ("socket hang up", ("network_failed", False)),
+            ("API key not valid", ("credential_missing", True)),
+            ("INFO requestTimeout=30000", ("upstream_failed", False)),
+            ("stack: at line 401", ("upstream_failed", False)),
+        ):
+            for classify in (acp_adapter.classify_error, opencode_adapter.classify,
+                             lambda text: claude_adapter.classify(1, text)):
+                with self.subTest(diagnostic=diagnostic, classify=classify):
+                    self.assertEqual(classify(diagnostic), expected)
+
+    def test_documented_reason_codes_and_security_contract(self):
+        for name in ("guide.md", "guide.zh-CN.md"):
+            doc = (ROOT / "docs" / name).read_text()
+            for reason in ("invalid_protocol", "output_too_large", "input_limit", "adapter_io_failed", "cli_unavailable"):
+                self.assertIn(f"| `{reason}` |", doc)
+            for token in ("allow_once", "rawInput", "locations", "-32000", "-32602"):
+                self.assertIn(token, doc)
+            self.assertNotIn("not numeric RPC codes", doc)
+        self.assertIn("external plugin\nisolation is **unverified**", (ROOT / "docs/guide.md").read_text())
+        self.assertIn("rw permits arbitrary commands as the current user", (ROOT / "docs/guide.md").read_text())
+        self.assertIn("以当前用户身份执行任意命令", (ROOT / "docs/guide.zh-CN.md").read_text())
 
     def test_success_cleans_up_descendants(self):
         self.assertEqual(self.run_peer("descendant")["response"], "PONG")

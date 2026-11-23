@@ -21,11 +21,16 @@
 | `timeout` | 适配器执行超出时间预算。 |
 | `invalid_request` | 协议、options、模型或其它必要请求字段无效。 |
 | `free_tier_rejected` | OpenCode 上游拒绝免费档访问。 |
-| `payment_required` | OpenCode 上游要求付费或补充余额。 |
-| `tool_use_rejected` | OpenCode 尝试调用工具，且没有可用的最终文本。 |
+| `payment_required` | 上游要求付费或补充余额，包括 Qwen ACP。 |
+| `tool_use_rejected` | 工具被拒且没有可用正文，或 ACP 对端在被拒后取消。 |
 | `interrupted` | 执行被取消或收到终止信号；核心据此停止整条顶替链。 |
+| `invalid_protocol` | ACP 版本或 RPC 消息格式无效。 |
+| `output_too_large` | 输出超过单行、总流量、回答或轨迹上限。 |
+| `input_limit` | 输入或待发送的客户端消息超过大小上限。 |
+| `adapter_io_failed` | 适配器 I/O 或进程清理失败。 |
+| `cli_unavailable` | 无法启动配置的 CLI。 |
 
-所有适配器都会返回 `interrupted`。只有 `free_tier_rejected`、`payment_required` 和 `tool_use_rejected` 仅适用于 OpenCode。fatal 失败停止当前 provider 的尝试，不代表批准待审稿或授权花费。
+所有适配器都会返回 `interrupted`。只有 `free_tier_rejected` 仅适用于 OpenCode。核心对新增 ACP 原因码的处理**未核实**。fatal 失败停止当前 provider 的尝试，不代表批准待审稿或授权花费。
 
 ## 信任模型
 
@@ -49,14 +54,17 @@ OpenCode 会话删除采用尽力清理方式。
 输入遵循 [agent-use 请求协议](https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md#adapter-protocol)。
 默认 `access=none`，不传 `workdir`，在空临时目录运行并拒绝全部审批；
 `ro`/`rw` 必须传绝对路径的现有 `workdir`。`ro` 只批准 `read`/`search` 类工具，
-`rw` 批准全部类型，优先单次选项。`ro` 遇到未知类型拒绝，无可用选项则返回 `cancelled`。
+且只选 `allow_once`。同一调用报告过的类型必须全部安全；`locations` 和嵌套
+`rawInput` 路径字段中的每个路径都必须 resolve 后位于 `workdir` 内（相对路径以它为基准，解析符号链接）。
+无路径、路径格式错误或无法解析均拒绝，包括没有路径的读取/搜索；后续更新不能覆盖此前的危险信息。
+`rw` 批准全部类型，优先单次选项，**等于以当前用户身份执行任意命令**。无可用选项则返回 `cancelled`。
 审批依赖引擎如实上报工具类型并发出请求，不是操作系统沙箱。
 不实现客户端 `fs/*`、`terminal/*`，所有未知客户端方法返回 JSON-RPC `-32601`。
 
 客户端始终发送 `mcpServers: []`，不实现 MCP、不续会话。
 OpenCode 使用隔离的临时 home/config/data/cache/state，显式设置 `OPENCODE_TEST_HOME`，
 并开启 `OPENCODE_DISABLE_EXTERNAL_SKILLS`、`OPENCODE_DISABLE_CLAUDE_CODE`、
-`OPENCODE_DISABLE_PROJECT_CONFIG` 和 `OPENCODE_PURE`，关闭外部 skills、用户/项目指令和外部插件。
+`OPENCODE_DISABLE_PROJECT_CONFIG` 和 `OPENCODE_PURE`，关闭外部 skills、用户/项目指令；外部插件隔离**未核实**。
 配置固定 `share: disabled`、`autoupdate: false`、`permission: {"*": "ask"}` 和空 MCP。
 工具审批由 ACP 客户端按 `none/ro/rw` 执行，`none` 全拒绝、`ro` 只批读取/搜索。
 不要在引擎端改成 `deny`：本机 OpenCode 1.19.6 搭配 `opencode/mimo-v2.6-flash-free`
@@ -81,11 +89,16 @@ Qwen 注册项使用本机 CLI `--list-models` 公布的 `qmodel_latest`，其 A
 
 实际要求认证时报 `credential_missing`，仅公布登录方法不算未登录；适配器不发起登录。
 ACP 错误的正文及嵌套诊断字符串参与分类，RPC 数字错误码不当成 HTTP 状态。
+其中 -32000 表示认证错误，-32600/-32601/-32602 表示请求无效。
 Qwen 的免费额度耗尽、继续将使用付费额度提示归为 `payment_required`，不继续付费；成功正文不参与错误分类。
 协议版本不符或 RPC 格式损坏为 `invalid_protocol`，进程崩溃为 `upstream_failed` 或更具体的 CLI 错误。
+stderr 只保留末尾 64 KiB，并仅以最后 20 行分类；stdout 单行上限 4 MiB、总量上限 64 MiB，独立计数。
+主进程退出后最多继续排空管道约 0.5 秒，再清理进程组，不等待持有管道的孙进程自然退出。
+非我方发起的 `cancelled` 在已有工具拒绝时归 `tool_use_rejected`，否则归 `upstream_failed`；本地中断才归 `interrupted`。
 超时先发 `session/cancel`，留短暂处理时间，再终止并回收进程组。
 完成时写 `response.txt`、`status.json`；失败不把部分回答当成功。
-工具事件和审批决策复用有界的 `trajectory.jsonl`。引擎可能保留自己的历史，适配器不实现会话删除或续接。
+工具事件和审批决策复用有界的 `trajectory.jsonl`，每个 toolCallId 一行原地更新；取消期间待批权限回 `cancelled`。
+引擎可能保留自己的历史，适配器不实现会话删除或续接。
 离线替身为 `tests/fixtures/fake_acp_agent.py`。
 
 离线验收：`bash scripts/test.sh`。实机验收显式运行

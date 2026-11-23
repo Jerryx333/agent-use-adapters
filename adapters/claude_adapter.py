@@ -26,14 +26,15 @@ def interrupted(_signal, _frame):
 
 def classify(returncode, stderr):
     text = (stderr or "").lower()
-    if any(k in text for k in ("not logged in", "login required", "please run /login", "invalid api key", "unauthorized", "authentication", "failed to authenticate", "oauth session expired")) or re.search(r"\b401\b", text):
+    if any(k in text for k in ("not logged in", "login required", "please run /login", "invalid api key", "api key not valid", "unauthorized", "authentication", "failed to authenticate", "oauth session expired")) or re.search(r"\b(?:http(?:/\d(?:\.\d)?)?|status(?:\s+code)?|code|error)[\s:=]*401\b", text):
         return "credential_missing", True
     if re.search(r"quota|usage.?limit|hit your .*limit|limit.{0,24}resets|"
                  r"per.?(day|week|month)|daily|weekly|monthly", text):
         return "quota_exhausted", False
     if re.search(r"rate.?limit|too many requests|per.?(second|sec|minute|min)\b|\b[rt]pm\b|\b429\b", text):
         return "rate_limited", False
-    if any(k in text for k in ("network", "connection", "timed out", "timeout", "dns")) or re.search(r"\b50[023]\b", text):
+    if re.search(r"\b(?:network|connection|timed out|timeout|dns|enotfound|econnreset|econnrefused)\b|"
+                 r"fetch failed|socket hang up|\b50[023]\b", text):
         return "network_failed", False
     return "upstream_failed", False
 

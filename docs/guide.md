@@ -23,13 +23,18 @@ The core resolves the link before expanding `{config_dir}`, so adapter paths wor
 | `timeout` | The adapter's execution budget expired. |
 | `invalid_request` | The protocol, options, model, or another required request value is invalid. |
 | `free_tier_rejected` | OpenCode's upstream rejected access to its free tier. |
-| `payment_required` | OpenCode's upstream requires payment or additional funds. |
-| `tool_use_rejected` | OpenCode attempted tools and produced no usable final text. |
+| `payment_required` | The upstream requires payment or additional funds, including Qwen ACP. |
+| `tool_use_rejected` | Tools were rejected without usable final text, or the ACP peer cancelled after a rejection. |
 | `interrupted` | Execution was cancelled or received a termination signal; the core stops the entire fallback chain. |
+| `invalid_protocol` | The ACP version or RPC message is invalid. |
+| `output_too_large` | Output exceeds a line, stream, answer or telemetry limit. |
+| `input_limit` | Input or queued client messages exceed the size limit. |
+| `adapter_io_failed` | Adapter I/O or process cleanup failed. |
+| `cli_unavailable` | The configured CLI could not be launched. |
 
-All adapters return `interrupted`. Only `free_tier_rejected`, `payment_required`,
-and `tool_use_rejected` are OpenCode-specific. A fatal failure stops that provider's
-attempt; it does not approve a draft or authorize spending.
+All adapters return `interrupted`. Only `free_tier_rejected` is OpenCode-specific.
+Core handling of the new ACP reasons is **unverified**. A fatal failure stops that
+provider's attempt; it does not approve a draft or authorize spending.
 
 ## Trust model
 
@@ -56,9 +61,14 @@ command. Other engines' installed versions and restrictions are unverified.
 Requests use the [agent-use adapter envelope](https://github.com/Jerryx333/agent-use/blob/main/docs/DISPATCHER.md#adapter-protocol).
 For `access=none` (the default), omit `workdir`: the engine runs in an empty
 temporary directory and all permission requests are denied. For `ro`/`rw`, supply
-an absolute existing `workdir`. `ro` approves only `read`/`search` tool kinds;
-`rw` approves all kinds. Decisions prefer once-only options; missing kinds fail
-closed for `ro`, and missing usable options return `cancelled`. ACP permissions
+an absolute existing `workdir`. `ro` approves only `read`/`search` tool kinds and
+only `allow_once`. Every reported kind must be safe. Every path in `locations`
+and nested `rawInput` path fields must resolve inside `workdir` (relative paths
+are based there; symlinks are resolved). Missing, malformed or unresolvable paths
+are rejected, including pathless reads/searches. Earlier unsafe reports cannot
+be overwritten by later updates. `rw` approves all kinds, preferring once-only
+options: **rw permits arbitrary commands as the current user**. Missing usable
+options return `cancelled`. ACP permissions
 depend on an honest engine reporting its tool kinds and requesting permission;
 this is not an OS sandbox. Unknown client methods, including `fs/*` and
 `terminal/*`, return JSON-RPC `-32601`.
@@ -67,7 +77,8 @@ The client always sends `mcpServers: []`, never implements MCP, and never resume
 sessions. OpenCode runs with an isolated temporary home/config/data/cache/state,
 including `OPENCODE_TEST_HOME`, `OPENCODE_DISABLE_EXTERNAL_SKILLS`,
 `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_PROJECT_CONFIG`, and `OPENCODE_PURE`.
-External skills, user/project instructions and external plugins are disabled.
+External skills and user/project instructions are disabled; external plugin
+isolation is **unverified**.
 Configuration sets sharing disabled, autoupdate false, empty MCP and `permission: {"*": "ask"}`.
 The ACP client enforces `none`/`ro`/`rw` on these requests. Do not replace `ask`
 with engine-side `deny`: installed OpenCode 1.19.6 with `opencode/mimo-v2.6-flash-free`
@@ -103,14 +114,23 @@ Authentication errors return `credential_missing`; advertised login methods alon
 do not mean login is needed. The adapter never logs in.
 Qwen's complimentary-credit exhaustion/paid-credit continuation errors return
 `payment_required`, without continuing payment. Error classification reads message
-and nested diagnostic strings, not numeric RPC codes; successful answer text is
+and nested diagnostic strings. RPC codes -32000 and -32600/-32601/-32602 map to
+authentication and invalid-request failures; other numeric RPC codes are not
+interpreted as HTTP status codes. Successful answer text is
 never classified as an error. Version mismatches or
 malformed RPC return `invalid_protocol`; crashes return `upstream_failed` (or a
-classified CLI error). A timeout sends `session/cancel`, allows a short grace
+classified CLI error). Only the last 20 stderr lines are classified. Stderr keeps
+a 64 KiB tail; stdout has separate 4 MiB line and 64 MiB total limits.
+After the main process exits, pipes are drained for at most about 0.5 seconds
+before process-group cleanup, even if descendants keep the pipes open.
+An unsolicited `cancelled` is `tool_use_rejected` after a rejection, otherwise
+`upstream_failed`; only a local interruption is `interrupted`.
+A timeout sends `session/cancel`, allows a short grace
 period, then terminates and reaps the process group. `response.txt` and
 `status.json` are written on completion; failures never publish partial text as
 success. Tool events and approval decisions are recorded in bounded
-`trajectory.jsonl`. Engines may keep their own session history; no session deletion
+`trajectory.jsonl`, with one updated row per toolCallId. Pending permission requests
+during cancellation receive `cancelled`. Engines may keep their own session history; no session deletion
 or resumption is implemented. Offline tests use `tests/fixtures/fake_acp_agent.py`.
 
 Run offline checks with `bash scripts/test.sh`. Opt-in live checks are
