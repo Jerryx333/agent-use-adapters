@@ -39,25 +39,38 @@ def classify(returncode, stderr):
     return "upstream_failed", False
 
 
+def model_output_tokens(usage):
+    if not isinstance(usage, dict):
+        return 0
+    count = usage.get("outputTokens", usage.get("output_tokens", 0))
+    return count if type(count) is int else 0
+
+
 def claude_result(stdout):
-    """claude -p --output-format json 的结果：(正文, 错误文本, agent-use 口径的 usage 或 None)。
+    """返回正文、错误文本、agent-use 口径的 usage 和实际模型名，后两项可为 None。
     Claude 的 input_tokens 不含缓存读写，这里把缓存写入并进 input_tokens。"""
     try:
         data = json.loads(stdout or "")
     except ValueError:
-        return "", stdout or "", None
+        return "", stdout or "", None, None
     if not isinstance(data, dict) or data.get("type") != "result":
-        return "", "", None
+        return "", "", None, None
     text = data.get("result") if isinstance(data.get("result"), str) else ""
     if data.get("is_error") is not False or data.get("subtype") != "success":
-        return "", text, None
+        return "", text, None, None
+    actual_model = None
+    model_usage = data.get("modelUsage")
+    if isinstance(model_usage, dict) and model_usage:
+        model = max(model_usage, key=lambda name: model_output_tokens(model_usage[name]))
+        if re.fullmatch(r"[A-Za-z0-9_.:/-]{1,256}", model):
+            actual_model = model
     usage, count = data.get("usage"), lambda u, k: u.get(k) if type(u.get(k)) is int and u.get(k) >= 0 else None
     keys = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
     if not isinstance(usage, dict) or any(count(usage, k) is None for k in keys):
-        return text, "", None
+        return text, "", None, actual_model
     write, read = usage["cache_creation_input_tokens"], usage["cache_read_input_tokens"]
     return text, "", {"input_tokens": usage["input_tokens"] + write, "output_tokens": usage["output_tokens"],
-                      "cache_read_tokens": read, "cache_write_tokens": write}
+                      "cache_read_tokens": read, "cache_write_tokens": write}, actual_model
 
 
 def generate(request):
@@ -97,7 +110,7 @@ def generate(request):
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     elapsed = round(time.monotonic() - started, 2)
-    text, error, usage = claude_result(proc.stdout)
+    text, error, usage, actual_model = claude_result(proc.stdout)
     answer.write_text(text, encoding="utf-8")
     if proc.returncode != 0 or not text.strip():
         # 未登录等错误写在 JSON 结果里，不一定在 stderr
@@ -108,11 +121,15 @@ def generate(request):
         if reason == "credential_missing":
             response["missing_credential"] = "claude-login"
         return response
+    metadata = {"transport": "claude_cli", "elapsed_s": elapsed}
+    if usage:
+        metadata["usage"] = usage
+    if actual_model:
+        metadata["actual_model"] = actual_model
     status = {"state": "staged_for_review", "accepted": False, "requested_model": model, "effort": effort,
-              "elapsed_s": elapsed, "transport": "claude_cli", **({"usage": usage} if usage else {})}
+              **metadata}
     (output / "status.json").write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
-    response.update(state="staged_for_review", response=text,
-                    metadata={"transport": "claude_cli", "elapsed_s": elapsed, **({"usage": usage} if usage else {})})
+    response.update(state="staged_for_review", response=text, metadata=metadata)
     return response
 
 

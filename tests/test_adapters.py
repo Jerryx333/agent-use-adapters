@@ -66,12 +66,12 @@ class MainExceptionTests(unittest.TestCase):
         ok = {'type': 'result', 'subtype': 'success', 'is_error': False, 'result': '答复',
               'usage': {'input_tokens': 3, 'cache_creation_input_tokens': 40, 'cache_read_input_tokens': 900, 'output_tokens': 7}}
         self.assertEqual(claude_adapter.claude_result(json.dumps(ok)),
-                         ('答复', '', {'input_tokens': 43, 'output_tokens': 7, 'cache_read_tokens': 900, 'cache_write_tokens': 40}))
-        self.assertEqual(claude_adapter.claude_result(json.dumps(dict(ok, usage={'input_tokens': 3}))), ('答复', '', None))
-        self.assertEqual(claude_adapter.claude_result(json.dumps(dict(ok, usage={'input_tokens': 3, 'output_tokens': 7}))), ('答复', '', None))
+                         ('答复', '', {'input_tokens': 43, 'output_tokens': 7, 'cache_read_tokens': 900, 'cache_write_tokens': 40}, None))
+        self.assertEqual(claude_adapter.claude_result(json.dumps(dict(ok, usage={'input_tokens': 3}))), ('答复', '', None, None))
+        self.assertEqual(claude_adapter.claude_result(json.dumps(dict(ok, usage={'input_tokens': 3, 'output_tokens': 7}))), ('答复', '', None, None))
         self.assertEqual(claude_adapter.claude_result(json.dumps(dict(ok, is_error=True, subtype='success', result='Not logged in · Please run /login')))[:2],
                          ('', 'Not logged in · Please run /login'))
-        self.assertEqual(claude_adapter.claude_result('plain text'), ('', 'plain text', None))
+        self.assertEqual(claude_adapter.claude_result('plain text'), ('', 'plain text', None, None))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'task.txt').write_text('任务')
@@ -94,6 +94,41 @@ class MainExceptionTests(unittest.TestCase):
 
     def test_claude_interrupted(self):
         self.assert_main_failure(claude_adapter, KeyboardInterrupt(), 'interrupted', False)
+
+    def test_claude_actual_model_in_success_receipts(self):
+        ok = {'type': 'result', 'subtype': 'success', 'is_error': False, 'result': '答复'}
+        cases = (
+            ('single', {'modelUsage': {'claude-opus-5-5': {}}}, 'claude-opus-5-5'),
+            ('multiple', {'modelUsage': {
+                'sonnet': {'outputTokens': 3, 'output_tokens': 100},
+                'haiku': {},
+                'anthropic/claude-opus-5-5:1': {'output_tokens': 7},
+            }}, 'anthropic/claude-opus-5-5:1'),
+            ('missing', {}, None),
+            ('empty', {'modelUsage': {}}, None),
+            ('invalid model name', {'modelUsage': {
+                'valid': {'outputTokens': 1},
+                'invalid model': {'outputTokens': 2},
+            }}, None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task = root / 'task.txt'
+            task.write_text('任务', encoding='utf-8')
+            request = {'task_file': str(task), 'output': str(root / 'out'), 'model': 'sonnet'}
+            for name, fields, expected in cases:
+                with self.subTest(name=name):
+                    done = subprocess.CompletedProcess([], 0, json.dumps(dict(ok, **fields)), '')
+                    with mock.patch.dict(os.environ, {'CLAUDE_BIN': sys.executable}), \
+                            mock.patch.object(claude_adapter.subprocess, 'run', return_value=done):
+                        response = claude_adapter.generate(request)
+                    self.assertEqual(response['state'], 'staged_for_review')
+                    status = json.loads((root / 'out' / 'status.json').read_text(encoding='utf-8'))
+                    for receipt in (response['metadata'], status):
+                        if expected is None:
+                            self.assertNotIn('actual_model', receipt)
+                        else:
+                            self.assertEqual(receipt['actual_model'], expected)
 
     def test_codex_invalid_request(self):
         self.assert_main_failure(codex_adapter, ValueError('invalid options'), 'invalid_request', True)
